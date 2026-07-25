@@ -274,7 +274,7 @@ class AudioController extends GetxController
       subId: subId,
     );
     if (res case Success(:final response)) {
-      _onPlay(response);
+      await _onPlay(response);
       return true;
     } else {
       res.toast();
@@ -282,7 +282,7 @@ class AudioController extends GetxController
     }
   }
 
-  void _onPlay(PlayURLResp data) {
+  Future<void> _onPlay(PlayURLResp data) async {
     final PlayInfo? playInfo = data.playerInfo.values.firstOrNull;
     if (playInfo != null) {
       if (playInfo.hasPlayDash()) {
@@ -296,7 +296,10 @@ class AudioController extends GetxController
           (e) => e.id <= cacheAudioQa,
           (a, b) => a.id > b.id ? a : b,
         );
-        _onOpenMedia(VideoUtils.getCdnUrl(audio.playUrls));
+        await VideoUtils.ensureAutoCdn(audio.playUrls, isAudio: true);
+        await _onOpenMedia(
+          VideoUtils.getCdnUrl(audio.playUrls, isAudio: true),
+        );
       } else if (playInfo.hasPlayUrl()) {
         final playUrl = playInfo.playUrl;
         final durls = playUrl.durl;
@@ -305,7 +308,10 @@ class AudioController extends GetxController
         }
         final durl = durls.first;
         position.value = 0;
-        _onOpenMedia(VideoUtils.getCdnUrl(durl.playUrls));
+        await VideoUtils.ensureAutoCdn(durl.playUrls, isAudio: true);
+        await _onOpenMedia(
+          VideoUtils.getCdnUrl(durl.playUrls, isAudio: true),
+        );
       }
     }
   }

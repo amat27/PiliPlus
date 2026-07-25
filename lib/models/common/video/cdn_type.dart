@@ -4,6 +4,7 @@
 //https://github.com/yujincheng08/BiliRoaming/blob/master/app/src/main/res/values/arrays.xml
 
 enum CDNService {
+  auto('自动'),
   baseUrl('基础URL（不推荐）'),
   backupUrl('备用URL'),
   ali('ali（阿里云）', 'upos-sz-mirrorali.bilivideo.com'),
@@ -24,13 +25,21 @@ enum CDNService {
   aliov('aliov（阿里云海外）', 'upos-sz-mirroraliov.bilivideo.com'),
   cosov('cosov（腾讯云海外）', 'upos-sz-mirrorcosov.bilivideo.com'),
   hwov('hwov（华为云海外）', 'upos-sz-mirrorhwov.bilivideo.com'),
-  hk_bcache('hk_bcache（Bilibili海外）', 'cn-hk-eq-bcache-01.bilivideo.com'),
-  ;
+  hk_bcache('hk_bcache（Bilibili海外）', 'cn-hk-eq-bcache-01.bilivideo.com');
 
   final String desc;
   final String? host;
 
   const CDNService(this.desc, [this.host]);
+}
+
+CDNService parseCDNService(Object? value) {
+  if (value is String) {
+    for (final service in CDNService.values) {
+      if (service.name == value) return service;
+    }
+  }
+  return CDNService.auto;
 }
 
 // from https://rec.danmuji.org/dev/cdn-info/

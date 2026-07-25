@@ -183,6 +183,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final isResume = state == .resumed;
     final ctr = videoDetailController.plPlayerController..visible = isResume;
+    videoDetailController.setPageVisible(isShowing && isResume);
     if (isResume) {
       if (!ctr.showDanmaku) {
         introController.startTimer();
@@ -362,6 +363,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
   void didPushNext() {
     super.didPushNext();
     isShowing = false;
+    videoDetailController.setPageVisible(false);
 
     removeObserverMobile(this);
 
@@ -395,6 +397,7 @@ class _VideoDetailPageVState extends State<VideoDetailPageV>
     }
 
     isShowing = true;
+    videoDetailController.setPageVisible(true);
 
     addObserverMobile(this);
 

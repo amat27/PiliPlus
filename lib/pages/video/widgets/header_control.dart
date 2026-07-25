@@ -502,7 +502,7 @@ class HeaderControlState extends State<HeaderControl>
                     title: const Text('CDN 设置', style: titleStyle),
                     leading: const Icon(MdiIcons.cloudPlusOutline, size: 20),
                     subtitle: Text(
-                      '当前：${VideoUtils.cdnService.desc}，无法播放请切换',
+                      '当前：${VideoUtils.cdnDescription}，无法播放请切换',
                       style: subTitleStyle,
                     ),
                     onTap: () async {
@@ -957,10 +957,10 @@ class HeaderControlState extends State<HeaderControl>
                         Get.back();
                         final int quality = item.quality!;
                         final newQa = VideoQuality.fromCode(quality);
-                        videoDetailCtr
-                          ..plPlayerController.cacheVideoQa = newQa.code
-                          ..currentVideoQa.value = newQa
-                          ..updatePlayer();
+                        videoDetailCtr.plPlayerController.cacheVideoQa =
+                            newQa.code;
+                        videoDetailCtr.currentVideoQa.value = newQa;
+                        await videoDetailCtr.updatePlayer();
 
                         SmartDialog.showToast("画质已变为：${newQa.desc}");
 
@@ -1037,10 +1037,10 @@ class HeaderControlState extends State<HeaderControl>
                         Get.back();
                         final int quality = item.id!;
                         final newQa = AudioQuality.fromCode(quality);
-                        videoDetailCtr
-                          ..plPlayerController.cacheAudioQa = newQa.code
-                          ..currentAudioQa = newQa
-                          ..updatePlayer();
+                        videoDetailCtr.plPlayerController.cacheAudioQa =
+                            newQa.code;
+                        videoDetailCtr.currentAudioQa = newQa;
+                        await videoDetailCtr.updatePlayer();
 
                         SmartDialog.showToast("音质已变为：${newQa.desc}");
 
@@ -1121,12 +1121,11 @@ class HeaderControlState extends State<HeaderControl>
                           final isCurr = curCodecs.any(item.startsWith);
                           return ListTile(
                             dense: true,
-                            onTap: () {
+                            onTap: () async {
                               if (isCurr) return;
                               Get.back();
-                              videoDetailCtr
-                                ..currentDecodeFormats = format
-                                ..updatePlayer();
+                              videoDetailCtr.currentDecodeFormats = format;
+                              await videoDetailCtr.updatePlayer();
                               SmartDialog.showToast("解码已变为：${format.name}");
                             },
                             contentPadding: const .symmetric(horizontal: 20),

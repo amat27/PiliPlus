@@ -833,10 +833,10 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
                       }
                       final int quality = item.quality!;
                       final newQa = VideoQuality.fromCode(quality);
-                      videoDetailController
-                        ..plPlayerController.cacheVideoQa = newQa.code
-                        ..currentVideoQa.value = newQa
-                        ..updatePlayer();
+                      videoDetailController.plPlayerController.cacheVideoQa =
+                          newQa.code;
+                      videoDetailController.currentVideoQa.value = newQa;
+                      await videoDetailController.updatePlayer();
 
                       SmartDialog.showToast("画质已变为：${newQa.desc}");
 

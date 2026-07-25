@@ -86,6 +86,7 @@ abstract final class DownloadHttp {
           orElse: () => videosList.first,
         );
 
+        await VideoUtils.ensureAutoCdn(videoDash.playUrls);
         final videoUrl = VideoUtils.getCdnUrl(videoDash.playUrls);
 
         final Type2File videoFile = Type2File(
@@ -150,6 +151,7 @@ abstract final class DownloadHttp {
         );
       } else {
         final first = response.durl!.first;
+        await VideoUtils.ensureAutoCdn(first.playUrls);
         final List<Type1Segment> segmentList = [
           Type1Segment(
             backupUrls: [],

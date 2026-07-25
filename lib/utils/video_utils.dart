@@ -1,6 +1,7 @@
 import 'package:PiliPlus/models/common/video/cdn_type.dart';
 import 'package:PiliPlus/models/common/video/video_decode_type.dart';
 import 'package:PiliPlus/models_new/live/live_room_play_info/codec.dart';
+import 'package:PiliPlus/services/auto_cdn_service.dart';
 import 'package:PiliPlus/utils/extension/iterable_ext.dart';
 import 'package:PiliPlus/utils/storage_pref.dart';
 import 'package:flutter/foundation.dart' show kDebugMode, debugPrint;
@@ -9,6 +10,19 @@ abstract final class VideoUtils {
   static CDNService cdnService = Pref.defaultCDNService;
   static String? liveCdnUrl = Pref.liveCdnUrl;
   static bool disableAudioCDN = Pref.disableAudioCDN;
+
+  static String get cdnDescription => cdnService == CDNService.auto
+      ? AutoCdnService.instance.label
+      : cdnService.desc;
+
+  static Future<void> ensureAutoCdn(
+    Iterable<String> urls, {
+    bool isAudio = false,
+  }) async {
+    if (cdnService == CDNService.auto && !(isAudio && disableAudioCDN)) {
+      await AutoCdnService.instance.ensureSelected(urls);
+    }
+  }
 
   static const _proxyTf = 'proxy-tf-all-ws.bilivideo.com';
 
@@ -26,6 +40,15 @@ abstract final class VideoUtils {
     bool isAudio = false,
   }) {
     defaultCDNService ??= cdnService;
+
+    if (defaultCDNService == CDNService.auto) {
+      final host = AutoCdnService.instance.selectedHost;
+      if (host == null) {
+        defaultCDNService = CDNService.backupUrl;
+      } else {
+        return getCdnUrlForHost(urls, host: host, isAudio: isAudio);
+      }
+    }
 
     if (defaultCDNService == CDNService.baseUrl) {
       return urls.first;
@@ -88,6 +111,38 @@ abstract final class VideoUtils {
         : Uri.parse(mcdnUpgcxcode)
               .replace(host: defaultCDNService.host ?? CDNService.ali.host)
               .toString();
+  }
+
+  static String getCdnUrlForHost(
+    Iterable<String> urls, {
+    required String host,
+    bool isAudio = false,
+  }) {
+    if (isAudio && disableAudioCDN) {
+      return getCdnUrl(
+        urls,
+        defaultCDNService: CDNService.backupUrl,
+        isAudio: true,
+      );
+    }
+
+    for (final url in urls) {
+      if (_mirrorRegex.hasMatch(url)) {
+        return Uri.parse(
+          url,
+        ).replace(scheme: 'https', host: host, port: 443).toString();
+      }
+      if (url.contains('/upgcxcode/')) {
+        return Uri.parse(
+          url,
+        ).replace(scheme: 'https', host: host, port: 443).toString();
+      }
+    }
+    return getCdnUrl(
+      urls,
+      defaultCDNService: CDNService.backupUrl,
+      isAudio: isAudio,
+    );
   }
 
   static String getLiveCdnUrl(CodecItem e, {int index = 0}) {

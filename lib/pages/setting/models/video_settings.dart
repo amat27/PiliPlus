@@ -59,7 +59,7 @@ List<SettingsModel> get videoSettings => [
     title: 'CDN 设置',
     leading: const Icon(MdiIcons.cloudPlusOutline),
     getSubtitle: () =>
-        '当前使用：${VideoUtils.cdnService.desc}，部分 CDN 可能失效，如无法播放请尝试切换',
+        '当前使用：${VideoUtils.cdnDescription}，部分 CDN 可能失效，如无法播放请尝试切换',
     onTap: _showCDNDialog,
   ),
   NormalModel(
@@ -67,13 +67,6 @@ List<SettingsModel> get videoSettings => [
     leading: const Icon(MdiIcons.cloudPlusOutline),
     getSubtitle: () => '当前使用：${Pref.liveCdnUrl ?? "默认"}',
     onTap: _showLiveCDNDialog,
-  ),
-  const SwitchModel(
-    title: 'CDN 测速',
-    leading: Icon(Icons.speed),
-    subtitle: '测速通过模拟加载视频实现，注意流量消耗，结果仅供参考',
-    setKey: SettingBoxKey.cdnSpeedTest,
-    defaultVal: true,
   ),
   SwitchModel(
     title: '音频不跟随 CDN 设置',
