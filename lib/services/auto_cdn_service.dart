@@ -141,14 +141,15 @@ final class AutoCdnService {
     final selection = this.selection;
     if (selection == null) return '自动';
     final host = selectedHost ?? selection.selectedHost;
-    String? name;
+    return '自动（当前：${hostLabel(host)}，${selection.timings[host]} ms）';
+  }
+
+  static String hostLabel(String? host) {
+    if (host == null || host.isEmpty) return '未知';
     for (final service in CDNService.values) {
-      if (service.host == host) {
-        name = service.name;
-        break;
-      }
+      if (service.host == host) return service.name;
     }
-    return '自动（当前：${name ?? host}，${selection.timings[host]} ms）';
+    return host;
   }
 
   Future<AutoCdnSelection?> ensureSelected(Iterable<String> urls) {

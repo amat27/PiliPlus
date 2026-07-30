@@ -10,8 +10,10 @@ void main() {
     tester,
   ) async {
     var recoveries = 0;
+    var stalls = 0;
     final recovery = AutoCdnRecovery(
       canRecover: () => true,
+      onStall: () => stalls++,
       recoverNext: () async {
         recoveries++;
         return false;
@@ -21,8 +23,10 @@ void main() {
     recovery.onBufferingChanged(true);
     await tester.pump(const Duration(milliseconds: 2499));
     expect(recoveries, 0);
+    expect(stalls, 0);
     await tester.pump(const Duration(milliseconds: 1));
     expect(recoveries, 1);
+    expect(stalls, 1);
     recovery.dispose();
   });
 

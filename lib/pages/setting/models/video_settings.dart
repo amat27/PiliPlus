@@ -8,6 +8,7 @@ import 'package:PiliPlus/models/common/video/video_quality.dart';
 import 'package:PiliPlus/pages/setting/models/model.dart';
 import 'package:PiliPlus/pages/setting/widgets/ordered_multi_select_dialog.dart';
 import 'package:PiliPlus/pages/setting/widgets/select_dialog.dart';
+import 'package:PiliPlus/plugin/pl_player/controller.dart';
 import 'package:PiliPlus/plugin/pl_player/models/audio_output_type.dart';
 import 'package:PiliPlus/plugin/pl_player/models/hwdec_type.dart';
 import 'package:PiliPlus/utils/filtering_text.dart';
@@ -61,6 +62,16 @@ List<SettingsModel> get videoSettings => [
     getSubtitle: () =>
         '当前使用：${VideoUtils.cdnDescription}，部分 CDN 可能失效，如无法播放请尝试切换',
     onTap: _showCDNDialog,
+  ),
+  SwitchModel(
+    title: '显示 AutoCDN 播放状态',
+    subtitle: '播放时显示视频/音频节点、卡顿换线和网络错误，便于排查黑屏或无声',
+    leading: const Icon(Icons.monitor_heart_outlined),
+    setKey: SettingBoxKey.showAutoCDNStatus,
+    defaultVal: false,
+    onChanged: (value) {
+      PlPlayerController.instance?.showAutoCDNStatus.value = value;
+    },
   ),
   NormalModel(
     title: '直播 CDN 设置',

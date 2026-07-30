@@ -38,6 +38,7 @@ abstract final class SettingBoxKey {
       horizontalScreen = 'horizontalScreen',
       CDNService = 'CDNService',
       autoCDNSelection = 'autoCDNSelection',
+      showAutoCDNStatus = 'showAutoCDNStatus',
       disableAudioCDN = 'disableAudioCDN',
       autoPiP = 'autoPiP',
       enableAutoLongPressSpeed = 'enableAutoLongPressSpeed',

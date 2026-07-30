@@ -4,6 +4,7 @@ final class AutoCdnRecovery {
   AutoCdnRecovery({
     required this.canRecover,
     required this.recoverNext,
+    this.onStall,
     this.onRoundEnd,
     this.stallDelay = const Duration(milliseconds: 2500),
     this.retryDelay = const Duration(seconds: 5),
@@ -11,6 +12,7 @@ final class AutoCdnRecovery {
 
   final bool Function() canRecover;
   final Future<bool> Function() recoverNext;
+  final void Function()? onStall;
   final void Function()? onRoundEnd;
   final Duration stallDelay;
   final Duration retryDelay;
@@ -82,6 +84,7 @@ final class AutoCdnRecovery {
         return;
       }
 
+      onStall?.call();
       _recovering = true;
       var recovered = false;
       try {

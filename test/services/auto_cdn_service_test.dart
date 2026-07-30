@@ -16,6 +16,15 @@ void main() {
     );
   });
 
+  test('formats known and unknown CDN host labels', () {
+    expect(
+      AutoCdnService.hostLabel('upos-tf-all-tx.bilivideo.com'),
+      'tf_tx',
+    );
+    expect(AutoCdnService.hostLabel('example.com'), 'example.com');
+    expect(AutoCdnService.hostLabel(null), '未知');
+  });
+
   test(
     'sorts successful probes by TTFB and preserves the signed URL',
     () async {

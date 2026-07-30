@@ -1389,6 +1389,45 @@ class _PLVideoPlayerState extends State<PLVideoPlayer>
             },
           ),
 
+        if (widget.videoDetailController case final controller?)
+          Positioned(
+            top: 48,
+            left: 8,
+            child: IgnorePointer(
+              child: Obx(() {
+                final status = controller.autoCdnStatus.value;
+                if (!plPlayerController.showControls.value ||
+                    !plPlayerController.showAutoCDNStatus.value ||
+                    status.isEmpty) {
+                  return const SizedBox.shrink();
+                }
+                return ConstrainedBox(
+                  constraints: BoxConstraints(maxWidth: maxWidth * 0.72),
+                  child: DecoratedBox(
+                    decoration: const BoxDecoration(
+                      color: Color(0xA6000000),
+                      borderRadius: BorderRadius.all(Radius.circular(6)),
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
+                      child: Text(
+                        status,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 11,
+                          height: 1.3,
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ),
+          ),
+
         /// 长按倍速 toast
         if (!isLive)
           IgnorePointer(

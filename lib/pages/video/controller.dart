@@ -172,10 +172,13 @@ class VideoDetailController extends GetxController
   late final AutoCdnRecovery _autoCdnRecovery = AutoCdnRecovery(
     canRecover: _canAutoRecoverCdn,
     recoverNext: _recoverNextCdn,
+    onStall: _onAutoCdnStall,
     onRoundEnd: _autoCdnTriedHosts.clear,
   );
   final Set<String> _autoCdnTriedHosts = {};
   String? _autoCdnHost;
+  final RxString autoCdnStatus = ''.obs;
+  bool _waitingForAutoCdnRecovery = false;
   bool _isPageVisible = true;
   bool _autoCdnListenersAttached = false;
   List<StreamSubscription>? _autoCdnSubscriptions;
@@ -571,17 +574,89 @@ class VideoDetailController extends GetxController
     if (_autoCdnListenersAttached) return;
     _autoCdnListenersAttached = true;
     _autoCdnSubscriptions = [
-      plPlayerController.isBuffering.listen(
-        _autoCdnRecovery.onBufferingChanged,
-      ),
+      plPlayerController.isBuffering.listen((buffering) {
+        _autoCdnRecovery.onBufferingChanged(buffering);
+        if (!buffering &&
+            _waitingForAutoCdnRecovery &&
+            !plPlayerController.processing) {
+          _waitingForAutoCdnRecovery = false;
+          _updateAutoCdnStatus('播放已恢复');
+        }
+      }),
       plPlayerController.isSeeking.listen((_) {
         _autoCdnRecovery.onEligibilityChanged();
+      }),
+      plPlayerController.isPlayerSeeking.listen((seeking) {
+        _autoCdnRecovery.onEligibilityChanged();
+        if (seeking) {
+          _updateAutoCdnStatus('进度跳转中，暂停自动换线');
+        } else if (!_waitingForAutoCdnRecovery) {
+          _updateAutoCdnStatus('进度跳转完成');
+        }
       }),
       plPlayerController.playerStatus.listen((_) {
         _autoCdnRecovery.onEligibilityChanged();
       }),
+      plPlayerController.videoPlayerController!.stream.error.listen(
+        _onAutoCdnPlayerError,
+      ),
     ];
-    plPlayerController.addPositionListener(_autoCdnRecovery.onPositionChanged);
+    plPlayerController.addPositionListener(_onAutoCdnPositionChanged);
+  }
+
+  void _onAutoCdnPositionChanged(Duration position) {
+    _autoCdnRecovery.onPositionChanged(position);
+    if (_waitingForAutoCdnRecovery &&
+        !plPlayerController.isBuffering.value &&
+        !plPlayerController.processing) {
+      _waitingForAutoCdnRecovery = false;
+      _updateAutoCdnStatus('播放已恢复');
+    }
+  }
+
+  void _onAutoCdnStall() {
+    _waitingForAutoCdnRecovery = true;
+    _updateAutoCdnStatus('持续卡顿，准备换线');
+  }
+
+  void _onAutoCdnPlayerError(String error) {
+    if (VideoUtils.cdnService != CDNService.auto || isFileSource) return;
+    final sanitized = error
+        .replaceAllMapped(RegExp(r'https?://[^\s]+'), (match) {
+          final uri = Uri.tryParse(match.group(0)!);
+          return uri?.host ?? 'media-url';
+        })
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    final message = sanitized.length > 120
+        ? '${sanitized.substring(0, 117)}...'
+        : sanitized;
+    _updateAutoCdnStatus('播放器错误：$message');
+  }
+
+  void _updateAutoCdnStatus(String event) {
+    if (VideoUtils.cdnService != CDNService.auto || isFileSource) {
+      autoCdnStatus.value = '';
+      return;
+    }
+    final videoHost = _mediaHost(videoUrl) ?? _autoCdnHost;
+    final audioHost = _mediaHost(audioUrl);
+    final timing = AutoCdnService.instance.timings[videoHost];
+    final position = Duration(
+      milliseconds: plPlayerController.positionInMilliseconds,
+    );
+    final minutes = position.inMinutes;
+    final seconds = (position.inSeconds % 60).toString().padLeft(2, '0');
+    autoCdnStatus.value = [
+      'AutoCDN 当前：${AutoCdnService.hostLabel(videoHost)}${timing == null ? '' : ' · $timing ms'}',
+      '视频：${AutoCdnService.hostLabel(videoHost)}  音频：${audioUrl == null || audioUrl!.isEmpty ? '无独立音轨' : AutoCdnService.hostLabel(audioHost)}',
+      '$minutes:$seconds  $event',
+    ].join('\n');
+  }
+
+  static String? _mediaHost(String? url) {
+    if (url == null || url.isEmpty) return null;
+    return Uri.tryParse(url)?.host;
   }
 
   bool _canAutoRecoverCdn() {
@@ -595,6 +670,7 @@ class VideoDetailController extends GetxController
         player != null &&
         plPlayerController.playerStatus.isPlaying &&
         !plPlayerController.isSeeking.value &&
+        !plPlayerController.isPlayerSeeking.value &&
         !plPlayerController.processing &&
         !isQuerying &&
         !player.state.completed &&
@@ -619,8 +695,12 @@ class VideoDetailController extends GetxController
               _autoCdnHost,
               _autoCdnTriedHosts,
             );
-            if (nextHost == null) return false;
+            if (nextHost == null) {
+              _updateAutoCdnStatus('没有可用的备用节点');
+              return false;
+            }
 
+            final previousHost = _autoCdnHost;
             if (_autoCdnHost case final currentHost?) {
               _autoCdnTriedHosts.add(currentHost);
               AutoCdnService.instance.avoidHost(currentHost);
@@ -631,6 +711,9 @@ class VideoDetailController extends GetxController
               continue;
             }
 
+            _updateAutoCdnStatus(
+              '换线中：${AutoCdnService.hostLabel(previousHost)} → ${AutoCdnService.hostLabel(nextHost)}',
+            );
             await _playerInit(
               seek: position,
               autoplay: wasPlaying,
@@ -645,12 +728,18 @@ class VideoDetailController extends GetxController
             }
             if (plPlayerController.dataStatus.value == DataStatus.error) {
               AutoCdnService.instance.avoidHost(nextHost);
+              _updateAutoCdnStatus(
+                '换线失败：${AutoCdnService.hostLabel(nextHost)}',
+              );
               continue;
             }
 
             _autoCdnHost = nextHost;
             videoUrl = sources.video;
             audioUrl = sources.audio;
+            _updateAutoCdnStatus(
+              '已切换：${AutoCdnService.hostLabel(previousHost)} → ${AutoCdnService.hostLabel(nextHost)}，等待恢复',
+            );
             return true;
           }
           return false;
@@ -822,6 +911,9 @@ class VideoDetailController extends GetxController
     final sources = _getDashUrls();
     videoUrl = sources.video;
     audioUrl = sources.audio;
+    _updateAutoCdnStatus(
+      _autoCdnHost == null ? '测速失败，使用备用 URL' : '画质切换后重新选线',
+    );
 
     await playerInit();
   }
@@ -1041,6 +1133,7 @@ class VideoDetailController extends GetxController
                 durl.expand((item) => item.playUrls),
               );
               if (generation != _sourceGeneration) return;
+              _autoCdnHost = AutoCdnService.instance.selectedHost;
             // TODO: refa
             final sb = StringBuffer('edl://!no_clip;!no_chapters;');
             for (var i in durl) {
@@ -1051,10 +1144,14 @@ class VideoDetailController extends GetxController
           } else {
               await VideoUtils.ensureAutoCdn(durl.single.playUrls);
               if (generation != _sourceGeneration) return;
+              _autoCdnHost = AutoCdnService.instance.selectedHost;
             videoUrl = VideoUtils.getCdnUrl(durl.single.playUrls);
           }
 
           audioUrl = '';
+            _updateAutoCdnStatus(
+              _autoCdnHost == null ? '测速失败，使用备用 URL' : '初始选线完成',
+            );
 
           // 实际为FLV/MP4格式，但已被淘汰，这里仅做兜底处理
           final videoQuality = VideoQuality.fromCode(data.quality!);
@@ -1152,6 +1249,9 @@ class VideoDetailController extends GetxController
         audioUrl = '';
           currentAudioQa = null;
       }
+        _updateAutoCdnStatus(
+          _autoCdnHost == null ? '测速失败，使用备用 URL' : '初始选线完成',
+        );
       await _initPlayerIfNeeded(autoFullScreenFlag);
     } else {
       _autoPlay.value = false;
@@ -1425,7 +1525,7 @@ class VideoDetailController extends GetxController
     _autoCdnSubscriptions = null;
     if (_autoCdnListenersAttached) {
       plPlayerController.removePositionListener(
-        _autoCdnRecovery.onPositionChanged,
+        _onAutoCdnPositionChanged,
       );
     }
     cid.close();
@@ -1500,6 +1600,8 @@ class VideoDetailController extends GetxController
     _autoCdnRecovery.reset();
     _autoCdnTriedHosts.clear();
     _autoCdnHost = null;
+    _waitingForAutoCdnRecovery = false;
+    autoCdnStatus.value = '';
   }
 
   ({String video, String audio}) _getDashUrls({String? host}) {

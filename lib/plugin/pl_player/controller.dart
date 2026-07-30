@@ -115,6 +115,8 @@ class PlPlayerController with BlockConfigMixin {
 
   final RxBool showBrightnessStatus = false.obs;
 
+  late final RxBool showAutoCDNStatus = Pref.showAutoCDNStatus.obs;
+
   final RxBool longPressStatus = false.obs;
 
   final RxBool controlsLock = false.obs;
@@ -179,6 +181,10 @@ class PlPlayerController with BlockConfigMixin {
   late final RxBool flipY = false.obs;
 
   final RxBool isBuffering = true.obs;
+
+  final RxBool isPlayerSeeking = false.obs;
+  Timer? _playerSeekTimer;
+  int _playerSeekGeneration = 0;
 
   /// 全屏方向
   // ignore: unnecessary_getters_setters
@@ -608,6 +614,9 @@ class PlPlayerController with BlockConfigMixin {
   }) async {
     try {
       _processing = true;
+      _playerSeekGeneration++;
+      _playerSeekTimer?.cancel();
+      isPlayerSeeking.value = false;
       this.isLive = isLive;
       _videoType = videoType ?? VideoType.ugc;
       this.width = width;
@@ -1075,6 +1084,24 @@ class PlPlayerController with BlockConfigMixin {
       position = Duration.zero;
     }
     _heartDuration = position.inSeconds;
+    final seekGeneration = ++_playerSeekGeneration;
+    _playerSeekTimer?.cancel();
+    isPlayerSeeking.value = true;
+    _playerSeekTimer = Timer(const Duration(seconds: 8), () {
+      if (seekGeneration == _playerSeekGeneration) {
+        isPlayerSeeking.value = false;
+      }
+    });
+
+    void finishSeek() {
+      if (seekGeneration != _playerSeekGeneration) return;
+      _playerSeekTimer?.cancel();
+      _playerSeekTimer = Timer(const Duration(seconds: 2), () {
+        if (seekGeneration == _playerSeekGeneration) {
+          isPlayerSeeking.value = false;
+        }
+      });
+    }
 
     Future<void> seek() async {
       if (isSeek) {
@@ -1086,6 +1113,8 @@ class PlPlayerController with BlockConfigMixin {
         await _videoPlayerController?.seek(position);
       } catch (e) {
         if (kDebugMode) debugPrint('seek failed: $e');
+      } finally {
+        finishSeek();
       }
     }
 
@@ -1599,6 +1628,7 @@ class PlPlayerController with BlockConfigMixin {
     if (kDebugMode) {
       debugPrint('dispose player');
     }
+    _playerSeekTimer?.cancel();
     _videoPlayerController?.dispose();
     _videoPlayerController = null;
     _videoController = null;
