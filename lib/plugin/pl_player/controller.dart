@@ -916,6 +916,8 @@ class PlPlayerController with BlockConfigMixin {
   List<StreamSubscription>? _subscriptions;
   final Set<ValueChanged<Duration>> _positionListeners = {};
   final Set<ValueChanged<PlayerStatus>> _statusListeners = {};
+  final Set<ValueChanged<Duration>> _seekTargetListeners = {};
+  final Set<ValueChanged<String>> _errorListeners = {};
 
   /// 播放事件监听
   void _startListeners(NativePlayer player) {
@@ -1007,6 +1009,9 @@ class PlPlayerController with BlockConfigMixin {
           }
         })),
       stream.error.listen((String event) {
+        for (final listener in _errorListeners) {
+          listener(event);
+        }
         if (dataSource is FileSource &&
             event.startsWith("Failed to open file")) {
           return;
@@ -1082,6 +1087,9 @@ class PlPlayerController with BlockConfigMixin {
     }
     if (position < Duration.zero) {
       position = Duration.zero;
+    }
+    for (final listener in _seekTargetListeners) {
+      listener(position);
     }
     _heartDuration = position.inSeconds;
     final seekGeneration = ++_playerSeekGeneration;
@@ -1477,6 +1485,22 @@ class PlPlayerController with BlockConfigMixin {
 
   void removePositionListener(ValueChanged<Duration> listener) =>
       _positionListeners.remove(listener);
+
+  void addSeekTargetListener(ValueChanged<Duration> listener) {
+    if (_playerCount == 0) return;
+    _seekTargetListeners.add(listener);
+  }
+
+  void removeSeekTargetListener(ValueChanged<Duration> listener) =>
+      _seekTargetListeners.remove(listener);
+
+  void addErrorListener(ValueChanged<String> listener) {
+    if (_playerCount == 0) return;
+    _errorListeners.add(listener);
+  }
+
+  void removeErrorListener(ValueChanged<String> listener) =>
+      _errorListeners.remove(listener);
 
   void addStatusLister(ValueChanged<PlayerStatus> listener) {
     if (_playerCount == 0) return;

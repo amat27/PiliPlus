@@ -466,8 +466,9 @@ class _PostPanelState extends State<PostPanel>
               final player = plPlayerController.videoPlayerController;
               if (player != null) {
                 final start = (item.segment.first * 1000).round();
-                Future<void> seekTo() => player.seek(
+                Future<void> seekTo() => plPlayerController.seekTo(
                   Duration(milliseconds: (item.segment.second * 1000).round()),
+                  isSeek: false,
                 );
                 if (start <= 0) {
                   seekTo();
@@ -477,7 +478,10 @@ class _PostPanelState extends State<PostPanel>
                   return;
                 }
                 final seek = max(0, start - 2000);
-                await player.seek(Duration(milliseconds: seek));
+                await plPlayerController.seekTo(
+                  Duration(milliseconds: seek),
+                  isSeek: false,
+                );
                 if (!player.state.playing) {
                   await player.play();
                 }

@@ -54,6 +54,7 @@ import 'package:PiliPlus/plugin/pl_player/models/play_status.dart';
 import 'package:PiliPlus/services/auto_cdn_recovery.dart';
 import 'package:PiliPlus/services/auto_cdn_service.dart';
 import 'package:PiliPlus/services/download/download_service.dart';
+import 'package:PiliPlus/services/video_resume_service.dart';
 import 'package:PiliPlus/utils/accounts.dart';
 import 'package:PiliPlus/utils/connectivity_utils.dart';
 import 'package:PiliPlus/utils/extension/context_ext.dart';
@@ -136,6 +137,11 @@ class VideoDetailController extends GetxController
   String? audioUrl;
   Duration? defaultST;
   Duration? playedTime;
+  Duration? _lastCachedProgress;
+  final VideoResumeTarget _resumeTarget = VideoResumeTarget();
+  String _resumeStatus = '从头播放';
+  Timer? _resumeTargetTimer;
+  int? _resumeRecoveryToken;
   String get playedTimePos {
     final pos = playedTime?.inMilliseconds;
     return pos == null || pos == 0 ? '' : '?t=${pos / 1000}';
@@ -182,6 +188,14 @@ class VideoDetailController extends GetxController
   bool _isPageVisible = true;
   bool _autoCdnListenersAttached = false;
   List<StreamSubscription>? _autoCdnSubscriptions;
+  int _mediaGeneration = 0;
+  int? _errorContextGeneration;
+  int? _errorContextMediaGeneration;
+  int? _errorContextCid;
+  Set<String> _errorContextHosts = const {};
+  bool _mediaOpening = false;
+  DateTime? _hostlessErrorSuppressedUntil;
+  bool _transitionHostlessRetryUsed = false;
   static Future<void> _playerOperationTail = Future.value();
 
   late final scrollKey = GlobalKey<ExtendedNestedScrollViewState>();
@@ -337,12 +351,30 @@ class VideoDetailController extends GetxController
   final isLoginVideo = Accounts.get(AccountType.video).isLogin;
 
   late final watchProgress = GStorage.watchProgress;
-  void cacheLocalProgress() {
-    if (plPlayerController.playerStatus.isCompleted) {
-      watchProgress.put(cid.value.toString(), entry.totalTimeMilli);
-    } else if (playedTime case final playedTime?) {
-      watchProgress.put(cid.value.toString(), playedTime.inMilliseconds);
+  void cacheProgress() {
+    if (plPlayerController.cid != cid.value) return;
+    final progress = plPlayerController.playerStatus.isCompleted
+        ? plPlayerController.durationInMilliseconds
+        : playedTime?.inMilliseconds;
+    if (progress != null && progress > 0) {
+      watchProgress.put(cid.value.toString(), progress);
     }
+  }
+
+  void updatePlayedTime(Duration position) {
+    if (plPlayerController.cid != cid.value) return;
+    if (!_acceptResumePosition(position)) return;
+    playedTime = position;
+    if (position <= Duration.zero ||
+        (_lastCachedProgress != null &&
+            (position - _lastCachedProgress!).abs() <
+                const Duration(seconds: 5))) {
+      return;
+    }
+    _lastCachedProgress = position;
+    unawaited(
+      watchProgress.put(cid.value.toString(), position.inMilliseconds),
+    );
   }
 
   void initFileSource(BiliDownloadEntryInfo entry, {bool isInit = true}) {
@@ -597,14 +629,16 @@ class VideoDetailController extends GetxController
       plPlayerController.playerStatus.listen((_) {
         _autoCdnRecovery.onEligibilityChanged();
       }),
-      plPlayerController.videoPlayerController!.stream.error.listen(
-        _onAutoCdnPlayerError,
-      ),
     ];
-    plPlayerController.addPositionListener(_onAutoCdnPositionChanged);
+    plPlayerController
+      ..addPositionListener(_onAutoCdnPositionChanged)
+      ..addSeekTargetListener(_onSeekTargetChanged)
+      ..addErrorListener(_onPlayerError);
   }
 
   void _onAutoCdnPositionChanged(Duration position) {
+    if (!_isPageVisible || plPlayerController.cid != cid.value) return;
+    _acceptResumePosition(position);
     _autoCdnRecovery.onPositionChanged(position);
     if (_waitingForAutoCdnRecovery &&
         !plPlayerController.isBuffering.value &&
@@ -619,7 +653,97 @@ class VideoDetailController extends GetxController
     _updateAutoCdnStatus('持续卡顿，准备换线');
   }
 
-  void _onAutoCdnPlayerError(String error) {
+  void _onSeekTargetChanged(Duration target) {
+    if (!_isPageVisible || plPlayerController.cid != cid.value) return;
+    _cancelResumeWatchdog();
+    _resumeTarget.update(target);
+    _scheduleResumeTargetCheck();
+  }
+
+  bool _acceptResumePosition(Duration position) {
+    final hadTarget = _resumeTarget.target != null;
+    if (!_resumeTarget.acceptPosition(position)) return false;
+    if (hadTarget) _clearResumeTarget();
+    return true;
+  }
+
+  void _clearResumeTarget() {
+    _resumeTarget.clear();
+    _cancelResumeWatchdog();
+  }
+
+  void _cancelResumeWatchdog() {
+    _resumeTargetTimer?.cancel();
+    _resumeTargetTimer = null;
+    if (_resumeRecoveryToken case final token?) {
+      _autoCdnRecovery.cancelPlayerError(token);
+      _resumeRecoveryToken = null;
+    }
+  }
+
+  void _scheduleResumeTargetCheck() {
+    _resumeTargetTimer?.cancel();
+    final target = _resumeTarget.target;
+    if (target == null) return;
+    final generation = _sourceGeneration;
+    final mediaGeneration = _mediaGeneration;
+    final expectedCid = cid.value;
+    _resumeTargetTimer = Timer(const Duration(seconds: 3), () {
+      final currentPosition = Duration(
+        milliseconds: plPlayerController.positionInMilliseconds,
+      );
+      if (generation != _sourceGeneration ||
+          mediaGeneration != _mediaGeneration ||
+          expectedCid != cid.value ||
+          plPlayerController.cid != expectedCid ||
+          _resumeTarget.target != target) {
+        return;
+      }
+      if (VideoResumeService.reachedTarget(currentPosition, target)) {
+        _clearResumeTarget();
+        return;
+      }
+      _updateAutoCdnStatus('续播跳转未生效，准备换线');
+      _resumeRecoveryToken = _autoCdnRecovery.onPlayerError();
+    });
+  }
+
+  void _setAutoCdnErrorContext({
+    required int generation,
+    required int mediaGeneration,
+    required int expectedCid,
+    required Set<String> mediaHosts,
+    required bool mediaOpening,
+  }) {
+    _errorContextGeneration = generation;
+    _errorContextMediaGeneration = mediaGeneration;
+    _errorContextCid = expectedCid;
+    _errorContextHosts = mediaHosts;
+    _mediaOpening = mediaOpening;
+  }
+
+  void _clearAutoCdnErrorContext() {
+    _errorContextGeneration = null;
+    _errorContextMediaGeneration = null;
+    _errorContextCid = null;
+    _errorContextHosts = const {};
+    _mediaOpening = false;
+    _hostlessErrorSuppressedUntil = null;
+  }
+
+  void _onPlayerError(String error) {
+    final expectedCid = _errorContextCid;
+    if (_errorContextGeneration != _sourceGeneration ||
+        _errorContextMediaGeneration != _mediaGeneration ||
+        expectedCid == null ||
+        expectedCid != cid.value ||
+        (plPlayerController.cid != expectedCid && !_mediaOpening)) {
+      return;
+    }
+    _onAutoCdnPlayerError(error, _errorContextHosts);
+  }
+
+  void _onAutoCdnPlayerError(String error, Set<String> mediaHosts) {
     if (VideoUtils.cdnService != CDNService.auto || isFileSource) return;
     final sanitized = error
         .replaceAllMapped(RegExp(r'https?://[^\s]+'), (match) {
@@ -631,7 +755,41 @@ class VideoDetailController extends GetxController
     final message = sanitized.length > 120
         ? '${sanitized.substring(0, 117)}...'
         : sanitized;
-    _updateAutoCdnStatus('播放器错误：$message');
+    final action = AutoCdnRecovery.classifyPlayerError(
+      error,
+      mediaHosts: mediaHosts,
+      hasPendingSeek: _resumeTarget.target != null,
+      inSourceTransition:
+          _hostlessErrorSuppressedUntil?.isAfter(DateTime.now()) ?? false,
+      transitionRetryUsed: _transitionHostlessRetryUsed,
+    );
+    switch (action) {
+      case AutoCdnPlayerErrorAction.none:
+        _updateAutoCdnStatus('播放器错误：$message');
+      case AutoCdnPlayerErrorAction.retryCurrent:
+        _transitionHostlessRetryUsed = true;
+        _updateAutoCdnStatus('新源网络错误，原位重试：$message');
+        unawaited(_retryCurrentSource());
+      case AutoCdnPlayerErrorAction.recoverNext:
+        _updateAutoCdnStatus('播放器网络错误，准备换线：$message');
+        _autoCdnRecovery.onPlayerError();
+    }
+  }
+
+  Future<void> _retryCurrentSource() async {
+    final generation = _sourceGeneration;
+    await _runPlayerOperation<void>(() async {
+      if (generation != _sourceGeneration || !_canAutoRecoverCdn()) return;
+      final player = plPlayerController.videoPlayerController!;
+      final position = _resumeTarget.target ?? player.state.position;
+      await _playerInit(
+        seek: position,
+        autoplay: plPlayerController.playerStatus.isPlaying,
+        videoSource: videoUrl,
+        audioSource: audioUrl,
+        isTransitionRetry: true,
+      );
+    });
   }
 
   void _updateAutoCdnStatus(String event) {
@@ -668,13 +826,13 @@ class VideoDetailController extends GetxController
         data.dash != null &&
         videoUrl != null &&
         player != null &&
+        plPlayerController.cid == cid.value &&
         plPlayerController.playerStatus.isPlaying &&
         !plPlayerController.isSeeking.value &&
         !plPlayerController.isPlayerSeeking.value &&
         !plPlayerController.processing &&
         !isQuerying &&
-        !player.state.completed &&
-        player.state.buffering;
+        !player.state.completed;
   }
 
   Future<bool> _recoverNextCdn() async {
@@ -684,7 +842,7 @@ class VideoDetailController extends GetxController
             return false;
           }
           final player = plPlayerController.videoPlayerController!;
-          final position = player.state.position;
+          final position = _resumeTarget.target ?? player.state.position;
           final wasPlaying = plPlayerController.playerStatus.isPlaying;
           while (generation == _sourceGeneration &&
               _isPageVisible &&
@@ -714,11 +872,13 @@ class VideoDetailController extends GetxController
             _updateAutoCdnStatus(
               '换线中：${AutoCdnService.hostLabel(previousHost)} → ${AutoCdnService.hostLabel(nextHost)}',
             );
+            _waitingForAutoCdnRecovery = true;
             await _playerInit(
               seek: position,
               autoplay: wasPlaying,
               videoSource: sources.video,
               audioSource: sources.audio,
+              isTransitionRetry: true,
             );
             if (generation != _sourceGeneration) {
               if (!_isPageVisible || !plPlayerController.visible) {
@@ -958,13 +1118,43 @@ class VideoDetailController extends GetxController
     Duration? seek,
     String? videoSource,
     String? audioSource,
+    bool isTransitionRetry = false,
   }) async {
+    final generation = _sourceGeneration;
+    final mediaGeneration = ++_mediaGeneration;
+    final expectedCid = cid.value;
     final explicitSeek = seek != null;
-    seek ??= defaultST ?? playedTime;
-    if (!explicitSeek) {
-    if (seek == .zero) seek = null;
-    seek ??= getFirstSegment();
+    final pendingSeek = _resumeTarget.target;
+    seek ??= pendingSeek ?? defaultST ?? playedTime;
+    if (!explicitSeek && pendingSeek == null) {
+      if (seek == .zero) seek = null;
+      seek ??= getFirstSegment();
     }
+    if (seek != null) {
+      _resumeTarget
+        ..update(seek)
+        ..beginMediaOpen();
+    }
+    final actualVideoSource = videoSource ?? videoUrl!;
+    final actualAudioSource = audioSource ?? audioUrl;
+    final isFirstMediaOpen = plPlayerController.videoPlayerController == null;
+    if (!isTransitionRetry) _transitionHostlessRetryUsed = false;
+    _hostlessErrorSuppressedUntil =
+        isFirstMediaOpen
+        ? null
+        : DateTime.now().add(const Duration(seconds: 1));
+    final mediaHosts = {
+      ?_mediaHost(actualVideoSource),
+      ?_mediaHost(actualAudioSource),
+    };
+    _setAutoCdnErrorContext(
+      generation: generation,
+      mediaGeneration: mediaGeneration,
+      expectedCid: expectedCid,
+      mediaHosts: mediaHosts,
+      mediaOpening: true,
+    );
+    _attachAutoCdnListeners();
     await plPlayerController.setDataSource(
       isFileSource
           ? FileSource(
@@ -974,8 +1164,8 @@ class VideoDetailController extends GetxController
               hasDashAudio: entry.hasDashAudio,
             )
           : NetworkSource(
-              videoSource: videoSource ?? videoUrl!,
-              audioSource: audioSource ?? audioUrl,
+              videoSource: actualVideoSource,
+              audioSource: actualAudioSource,
             ),
       seekTo: seek,
       duration: data.timeLength == null
@@ -1002,6 +1192,20 @@ class VideoDetailController extends GetxController
       volume: volume,
       autoFullScreenFlag: autoFullScreenFlag,
     );
+    if (generation != _sourceGeneration ||
+        mediaGeneration != _mediaGeneration ||
+        expectedCid != cid.value) {
+      return;
+    }
+    _resumeTarget.mediaOpened();
+    _setAutoCdnErrorContext(
+      generation: generation,
+      mediaGeneration: mediaGeneration,
+      expectedCid: expectedCid,
+      mediaHosts: mediaHosts,
+      mediaOpening: false,
+    );
+    _scheduleResumeTargetCheck();
     _autoCdnRecovery.onEligibilityChanged();
 
     if (isClosed) return;
@@ -1068,49 +1272,52 @@ class VideoDetailController extends GetxController
     final requestSeasonId = seasonId;
     final requestVideoType = _actualVideoType ?? videoType;
     try {
-    if (plPlayerController.enableSponsorBlock && isBlock && !fromReset) {
-      querySponsorBlock(bvid: bvid, cid: cid.value);
-    }
-    if (plPlayerController.cacheVideoQa == null) {
-      final isWiFi = await ConnectivityUtils.isWiFi;
-      plPlayerController
-        ..cacheVideoQa = isWiFi
-            ? Pref.defaultVideoQa
-            : Pref.defaultVideoQaCellular
-        ..cacheAudioQa = isWiFi
-            ? Pref.defaultAudioQa
-            : Pref.defaultAudioQaCellular;
+      if (plPlayerController.enableSponsorBlock && isBlock && !fromReset) {
+        querySponsorBlock(bvid: bvid, cid: cid.value);
+      }
+      if (plPlayerController.cacheVideoQa == null) {
+        final isWiFi = await ConnectivityUtils.isWiFi;
+        plPlayerController
+          ..cacheVideoQa = isWiFi
+              ? Pref.defaultVideoQa
+              : Pref.defaultVideoQaCellular
+          ..cacheAudioQa = isWiFi
+              ? Pref.defaultAudioQa
+              : Pref.defaultAudioQaCellular;
         if (generation != _sourceGeneration) return;
-    }
+      }
 
-    final result = await VideoHttp.videoUrl(
+      final result = await VideoHttp.videoUrl(
         cid: requestCid,
         bvid: requestBvid,
         epid: requestEpId,
         seasonId: requestSeasonId,
-      tryLook: plPlayerController.tryLook,
+        tryLook: plPlayerController.tryLook,
         videoType: requestVideoType,
-      language: currLang.value,
-      voiceBalance: plPlayerController.enableAudioNormalization,
-    );
+        language: currLang.value,
+        voiceBalance: plPlayerController.enableAudioNormalization,
+      );
       if (generation != _sourceGeneration) return;
 
-    if (result case Success(:final response)) {
-      data = response;
+      if (result case Success(:final response)) {
+        data = response;
 
-      languages.value = data.language?.items;
-      currLang.value = data.curLanguage;
+        languages.value = data.language?.items;
+        currLang.value = data.curLanguage;
 
-      volume = data.volume;
+        volume = data.volume;
 
-      if (!fromReset) {
-        final progress = args.remove('progress');
-        if (progress != null) {
-          defaultST = Duration(milliseconds: progress);
-        } else {
-          defaultST = Duration(milliseconds: data.lastPlayTime);
+        if (!fromReset) {
+          final progress = args.remove('progress');
+          final resume = VideoResumeService.resolve(
+            explicitProgress: progress,
+            serverProgress: data.lastPlayTime,
+            localProgress: watchProgress.get(requestCid.toString()),
+            duration: data.timeLength,
+          );
+          defaultST = resume.position;
+          _resumeStatus = resume.source.label;
         }
-      }
 
       if (!isUgc && !fromReset && plPlayerController.enablePgcSkip) {
         if (data.clipInfoList case final clipInfoList?) {
@@ -1150,7 +1357,9 @@ class VideoDetailController extends GetxController
 
           audioUrl = '';
             _updateAutoCdnStatus(
-              _autoCdnHost == null ? '测速失败，使用备用 URL' : '初始选线完成',
+              _autoCdnHost == null
+                  ? '测速失败，使用备用 URL，$_resumeStatus'
+                  : '初始选线完成，$_resumeStatus',
             );
 
           // 实际为FLV/MP4格式，但已被淘汰，这里仅做兜底处理
@@ -1250,7 +1459,9 @@ class VideoDetailController extends GetxController
           currentAudioQa = null;
       }
         _updateAutoCdnStatus(
-          _autoCdnHost == null ? '测速失败，使用备用 URL' : '初始选线完成',
+          _autoCdnHost == null
+              ? '测速失败，使用备用 URL，$_resumeStatus'
+              : '初始选线完成，$_resumeStatus',
         );
       await _initPlayerIfNeeded(autoFullScreenFlag);
     } else {
@@ -1519,19 +1730,20 @@ class VideoDetailController extends GetxController
   @override
   void onClose() {
     _autoCdnRecovery.dispose();
+    _resumeTargetTimer?.cancel();
+    _clearAutoCdnErrorContext();
     for (final subscription in _autoCdnSubscriptions ?? const []) {
       subscription.cancel();
     }
     _autoCdnSubscriptions = null;
     if (_autoCdnListenersAttached) {
-      plPlayerController.removePositionListener(
-        _onAutoCdnPositionChanged,
-      );
+      plPlayerController
+        ..removePositionListener(_onAutoCdnPositionChanged)
+        ..removeSeekTargetListener(_onSeekTargetChanged)
+        ..removeErrorListener(_onPlayerError);
     }
+    cacheProgress();
     cid.close();
-    if (isFileSource) {
-      cacheLocalProgress();
-    }
     introScrollCtr?.dispose();
     introScrollCtr = null;
     tabCtr.dispose();
@@ -1546,13 +1758,15 @@ class VideoDetailController extends GetxController
 
   void onReset({bool isStein = false}) {
     _sourceGeneration++;
+    _mediaGeneration++;
     _activeQueryGeneration = null;
+    _clearAutoCdnErrorContext();
     _resetAutoCdnRecovery();
-    if (isFileSource) {
-      cacheLocalProgress();
-    }
+    cacheProgress();
 
     playedTime = null;
+    _lastCachedProgress = null;
+    _clearResumeTarget();
     defaultST = null;
     videoUrl = null;
     audioUrl = null;
